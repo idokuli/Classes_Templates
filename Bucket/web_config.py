@@ -14,7 +14,6 @@ class S3WebApp:
         
         secret_key = os.getenv("SECRET_KEY")
         if not secret_key:
-            print("No SECRET_KEY found. Generating and saving to .env...")
             secret_key = secrets.token_hex(32)
             with open(".env", "a") as f:
                 f.write(f"\nSECRET_KEY={secret_key}")
@@ -26,14 +25,12 @@ class S3WebApp:
 
     def _ensure_certs(self):
         if not os.path.exists('cert.pem') or not os.path.exists('key.pem'):
-            print("SSL Certificates not found. Generating self-signed certs...")
             cmd = [
                 "openssl", "req", "-x509", "-newkey", "rsa:4096", 
                 "-nodes", "-out", "cert.pem", "-keyout", "key.pem", 
                 "-days", "365", "-subj", "/CN=localhost"
             ]
             subprocess.run(cmd, check=True)
-            print("Certs generated successfully.")
 
     def _get_worker(self):
         return self.S3Class(
@@ -75,13 +72,17 @@ class S3WebApp:
 
         @self.app.route('/download/<path:filename>')
         def download(filename):
-            worker = self._get_worker()
-            return redirect(worker.get_url(session['bucket'], filename))
+            if 'access' in session:
+                worker = self._get_worker()
+                url = worker.get_url(session['bucket'], filename)
+                return redirect(url)
+            return redirect(url_for('login'))
 
         @self.app.route('/delete/<path:filename>')
         def delete(filename):
-            worker = self._get_worker()
-            worker.delete(session['bucket'], filename)
+            if 'access' in session:
+                worker = self._get_worker()
+                worker.delete(session['bucket'], filename)
             return redirect(url_for('index'))
 
         @self.app.route('/logout')
