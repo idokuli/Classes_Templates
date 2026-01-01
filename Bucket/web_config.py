@@ -66,7 +66,22 @@ class S3WebApp:
         def upload():
             f = request.files.get('file')
             if f and 'access' in session:
-                self._get_worker().upload(session['bucket'], f, f.filename, f.content_type)
+                name = f.filename.lower()
+                
+                if name.endswith(".pdf"):
+                    target_path = f"pdf/{f.filename}"
+                elif name.endswith((".doc", ".docx")):
+                    target_path = f"doc/{f.filename}"
+                elif name.endswith((".jpg", ".png", ".jpeg")):
+                    target_path = f"images/{f.filename}"
+                elif name.endswith((".mp4", ".mp3", ".avi")):
+                    target_path = f"videos/{f.filename}"
+                elif name.endswith((".zip", ".rar", ".7z")):
+                    target_path = f"zip/{f.filename}"
+                else:
+                    target_path = f"others/{f.filename}"
+                self._get_worker().upload(session['bucket'], f, target_path, f.content_type)
+                
             return redirect(url_for('index'))
 
         @self.app.route('/download/<path:filename>')
