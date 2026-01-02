@@ -1,106 +1,83 @@
-import os
-import secrets
-import subprocess
-from dotenv import load_dotenv
-from flask import Flask, request, render_template, redirect, url_for, session, flash
-from datetime import timedelta
-
-load_dotenv()
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from s3_service import S3Service
 
 class S3WebApp:
-    def __init__(self, s3_class):
-        self._ensure_certs()
+    def __init__(self):
         self.app = Flask(__name__)
-        
-        secret_key = os.getenv("SECRET_KEY") or secrets.token_hex(32)
-        if not os.getenv("SECRET_KEY"):
-            with open(".env", "a") as f: f.write(f"\nSECRET_KEY={secret_key}")
-        
-        self.app.secret_key = secret_key
-        self.app.permanent_session_lifetime = timedelta(days=30)
-        self.S3Class = s3_class
-        self._setup_routes()
-
-    def _ensure_certs(self):
-        if not os.path.exists('cert.pem'):
-            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes", 
-                           "-out", "cert.pem", "-keyout", "key.pem", "-days", "365", 
-                           "-subj", "/CN=localhost"], check=True)
+        self.app.secret_key = 'dev_key_123'
+        self.setup_routes()
 
     def _get_worker(self):
-        return self.S3Class(session.get('access'), session.get('secret'), session.get('region'))
+        return S3Service(session.get('access'), session.get('secret'), session.get('region'))
 
-    def _setup_routes(self):
-        @self.app.route('/login', methods=['GET', 'POST'])
-        def login():
-            if request.method == 'POST':
-                access = request.form.get('access')
-                secret = request.form.get('secret')
-                region = request.form.get('region')
-                bucket = request.form.get('bucket')
-
-                # VALIDATION: Check if region matches bucket
-                temp_worker = self.S3Class(access, secret, region)
-                actual = temp_worker.get_actual_region(bucket)
-
-                if not actual:
-                    return "Error: Could not find bucket or access denied. Check keys and name."
-                if actual != region:
-                    return f"Error: Bucket is in {actual}, but you entered {region}. Please fix and retry."
-
-                session['access'], session['secret'], session['region'], session['bucket'] = access, secret, region, bucket
-                return redirect(url_for('index'))
-            return render_template('login.html')
-
+    def setup_routes(self):
         @self.app.route('/')
         def index():
             if 'access' not in session: return redirect(url_for('login'))
+            current_path = request.args.get('path', '')
             try:
-                worker = self._get_worker()
-                files = worker.list_files(session['bucket'])
-                return render_template('index.html', files=files, bucket=session['bucket'])
+                folders, files = self._get_worker().list_files(session['bucket'], current_path)
+                return render_template('index.html', folders=folders, files=files, 
+                                       bucket=session['bucket'], current_path=current_path)
             except Exception as e:
-                return f"AWS Error: {str(e)} <br><a href='/logout'>Logout</a>"
+                flash(f"AWS Error: {str(e)}", "error")
+                return render_template('index.html', folders=[], files=[], bucket=session.get('bucket'))
 
         @self.app.route('/upload', methods=['POST'])
         def upload():
+            current_path = request.form.get('current_path', '')
             f = request.files.get('file')
-            if f and 'access' in session:
-                name = f.filename.lower()
-                
-                if name.endswith(".pdf"):
-                    target_path = f"pdf/{f.filename}"
-                elif name.endswith((".doc", ".docx")):
-                    target_path = f"doc/{f.filename}"
-                elif name.endswith((".jpg", ".png", ".jpeg")):
-                    target_path = f"images/{f.filename}"
-                elif name.endswith((".mp4", ".mp3", ".avi")):
-                    target_path = f"videos/{f.filename}"
-                elif name.endswith((".zip", ".rar", ".7z")):
-                    target_path = f"zip/{f.filename}"
-                else:
-                    target_path = f"others/{f.filename}"
-                self._get_worker().upload(session['bucket'], f, target_path, f.content_type)
-                
-            return redirect(url_for('index'))
-
-        @self.app.route('/download/<path:filename>')
-        def download(filename):
-            if 'access' in session:
-                url = self._get_worker().get_url(session['bucket'], filename)
-                return redirect(url)
-            return redirect(url_for('login'))
+            if f:
+                try:
+                    full_key = f"{current_path}{f.filename}"
+                    self._get_worker().upload(session['bucket'], f, full_key, f.content_type)
+                    flash(f"Successfully uploaded {f.filename}", "success")
+                    return "OK", 200  # JavaScript looks for this 200 status
+                except Exception as e:
+                    flash(f"Upload failed: {str(e)}", "error")
+                    return str(e), 500
+            return "No file", 400_path))
 
         @self.app.route('/delete/<path:filename>')
         def delete(filename):
-            if 'access' in session:
+            current_path = '/'.join(filename.split('/')[:-1])
+            if current_path: current_path += '/'
+            try:
                 self._get_worker().delete(session['bucket'], filename)
-            return redirect(url_for('index'))
+                flash("File deleted successfully", "success")
+            except Exception as e:
+                flash(f"Delete failed: {str(e)}", "error")
+            return redirect(url_for('index', path=current_path))
+
+        @self.app.route('/download/<path:filename>')
+        def download(filename):
+            try:
+                url = self._get_worker().get_url(session['bucket'], filename)
+                return redirect(url)
+            except Exception as e:
+                flash(f"Download failed: {str(e)}", "error")
+                return redirect(url_for('index'))
+
+        @self.app.route('/login', methods=['GET', 'POST'])
+        def login():
+            if request.method == 'POST':
+                session.update({'access': request.form.get('access_key'), 
+                                'secret': request.form.get('secret_key'), 
+                                'bucket': request.form.get('bucket_name')})
+                region = S3Service(session['access'], session['secret'], 'us-east-1').get_actual_region(session['bucket'])
+                if region:
+                    session['region'] = region
+                    return redirect(url_for('index'))
+                flash("Login failed. Check bucket name or credentials.", "error")
+            return render_template('login.html')
 
         @self.app.route('/logout')
         def logout():
             session.clear()
             return redirect(url_for('login'))
 
-    def start(self):
-        self.app.run(host='0.0.0.0', port=443, ssl_context=('cert.pem', 'key.pem'))
+    def run(self):
+        self.app.run(host='0.0.0.0', port=5000, debug=True)
+
+if __name__ == '__main__':
+    S3WebApp().run()
