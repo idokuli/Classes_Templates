@@ -32,11 +32,11 @@ class S3WebApp:
                     full_key = f"{current_path}{f.filename}"
                     self._get_worker().upload(session['bucket'], f, full_key, f.content_type)
                     flash(f"Successfully uploaded {f.filename}", "success")
-                    return "OK", 200  # JavaScript looks for this 200 status
+                    return "OK", 200
                 except Exception as e:
                     flash(f"Upload failed: {str(e)}", "error")
                     return str(e), 500
-            return "No file", 400_path))
+            return "No file", 400
 
         @self.app.route('/delete/<path:filename>')
         def delete(filename):
